@@ -1,0 +1,68 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.2.1'
+
+      - name: Build the mod
+        working-directory: mod
+        run: gradle build --no-daemon
+
+      - name: Build the launcher
+        working-directory: launcher
+        run: gradle build --no-daemon
+
+      - name: Make sure WiX is available
+        shell: pwsh
+        run: |
+          if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
+            choco install wixtoolset -y --no-progress
+            echo "C:\Program Files (x86)\WiX Toolset v3.14\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          }
+
+      - name: Package installer and portable build
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path pkg-in, dist, portable | Out-Null
+          Copy-Item launcher/build/libs/AstraLauncher.jar pkg-in/
+          $mods = "java.base,java.desktop,java.logging,java.management,java.naming,java.net.http,java.prefs,java.sql,java.xml,jdk.crypto.ec,jdk.unsupported,jdk.httpserver,jdk.zipfs"
+          $common = @(
+            "--name", "Astra Client", "--app-version", "0.1.0", "--vendor", "Astra",
+            "--description", "Astra Client launcher",
+            "--input", "pkg-in", "--main-jar", "AstraLauncher.jar",
+            "--main-class", "client.astra.launcher.Main",
+            "--icon", "assets/astra.ico", "--add-modules", $mods
+          )
+          jpackage --type exe @common --win-menu --win-shortcut --win-dir-chooser --win-per-user-install --win-upgrade-uuid 51325567-2181-4a5b-a813-83e3cf2c799d --dest dist
+          jpackage --type app-image @common --dest portable
+          Compress-Archive -Path "portable/Astra Client" -DestinationPath dist/AstraClient-portable.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: astra-client-windows
+          path: dist/*
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
